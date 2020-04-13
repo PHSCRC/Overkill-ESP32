@@ -13,6 +13,7 @@
 #define MDATA0 12
 #define MCLK1 14
 #define MDATA1 27
+#define LINEIN 26
 
 inline float sqrtSquaredSum(float a, float b){
   return sqrt(a*a+b*b);
@@ -25,7 +26,7 @@ inline uint8_t extractByte(uint16_t inByte){
 inline int16_t extractDataX(uint16_t infoRaw, uint16_t dataRaw){
   int16_t out;
 
-  uint8_t infoByte=extractByte(infoRaw);  
+  uint8_t infoByte=extractByte(infoRaw);
   uint8_t mask=1;
   mask<<=1;
   if(mask & infoByte){
@@ -43,7 +44,7 @@ inline int16_t extractDataX(uint16_t infoRaw, uint16_t dataRaw){
 inline int16_t extractDataY(uint16_t infoRaw, uint16_t dataRaw){
   int16_t out;
 
-  uint8_t infoByte=extractByte(infoRaw);  
+  uint8_t infoByte=extractByte(infoRaw);
   uint8_t mask=1;
   mask<<=0;
   if(mask & infoByte){
@@ -101,7 +102,7 @@ void mouse_write(uint8_t data, uint8_t clkPin, uint8_t dataPin)
   for (i=0; i < 8; i++) {
     if (data & 0x01) {
       gohi(dataPin);
-    } 
+    }
     else {
       golo(dataPin);
     }
@@ -112,11 +113,11 @@ void mouse_write(uint8_t data, uint8_t clkPin, uint8_t dataPin)
       ;
     parity = parity ^ (data & 0x01);
     data = data >> 1;
-  }  
+  }
   /* parity */
   if (parity) {
     gohi(dataPin);
-  } 
+  }
   else {
     golo(dataPin);
   }
@@ -193,7 +194,7 @@ void mouse_init(uint8_t clkPin, uint8_t dataPin, uint8_t i)
   gohi(dataPin);
   //  Serial.print("Sending reset to mouse\n");
   mouse_write(0xff, clkPin, dataPin);
-  mouse_read(clkPin, dataPin);  // ack byte 
+  mouse_read(clkPin, dataPin);  // ack byte
   mouse_read(clkPin, dataPin);  //self test successful
   mouse_read(clkPin, dataPin);  //mouse id
   mouse_write(0xf3, clkPin, dataPin); //set sample rate
@@ -212,8 +213,8 @@ void mouse_init(uint8_t clkPin, uint8_t dataPin, uint8_t i)
   //  Serial.print("Sending remote mode code\n");
   //should now be in stream mode
   /*
-  mouse_write(0xf0); //  remote mode 
-  mouse_read();  // ack 
+  mouse_write(0xf0); //  remote mode
+  mouse_read();  // ack
   //  Serial.print("Read ack byte2\n");
   */
 }
@@ -222,7 +223,7 @@ volatile uint64_t transmitionTimes[2][256];
 volatile uint8_t transNum[2];
 volatile uint8_t bitNumInTransmition[2];
 
-inline void generalISR(uint8_t whichOne, uint8_t dataPin){
+inline void generalPS2ISR(uint8_t whichOne, uint8_t dataPin){
    if(activateInterupts[whichOne]){
     if(bitNumInTransmition==0){
       transmitionTimes[whichOne][transNum[whichOne]]=micros();
@@ -238,10 +239,33 @@ inline void generalISR(uint8_t whichOne, uint8_t dataPin){
 }
 
 void IRAM_ATTR CLKFALLING0() {
- generalISR(0, MDATA0);
+ generalPS2ISR(0, MDATA0);
 }
 void IRAM_ATTR CLKFALLING1() {
- generalISR(1, MDATA1);
+ generalPS2ISR(1, MDATA1);
+}
+
+volatile uint64_t lineSensorTimings[256];
+volatile uint8_t latestLineSensor=0;
+volatile bool originalValueOfLightSensor;
+void IRAM_ATTR LINESENSORRISING(){
+  if(latestLineSensor==0){
+    originalValueOfLightSensor=false;
+  }
+  lineSensorTimings[latestLineSensor]=micros();
+  ++latestLineSensor;
+}
+void IRAM_ATTR LINESENSORFALLING(){
+  lineSensorTimings[latestLineSensor]=micros();
+  if(latestLineSensor==0){
+    originalValueOfLightSensor=true;
+  }
+  ++latestLineSensor;
+}
+
+inline bool getLightSensor(uint8_t position){
+  bool currentValue=(latestLineSensor + originalValueOfLightSensor)%2;
+  return currentValue;
 }
 
 #define leftAxisZero true
@@ -249,7 +273,7 @@ void IRAM_ATTR CLKFALLING1() {
 #define countsTomm 0.125f
 #define wheelDist 20.0f
 
-//meas_period*pll_kp must be <1 
+//meas_period*pll_kp must be <1
 #define pll_kp_ 25  //Odrive is at 1/8000, and they set it to 1000, we are at 1/200, so we set it to 25 (proportions)
 #define pll_ki_ (0.25f * (pll_kp_ * pll_kp_)) // Critically damped
 
@@ -266,6 +290,10 @@ float dX;
 float dY;
 
 void broadcastOdomOverCAN(){
+
+}
+void broadcastLineSensorUpdateOverCan(){
+
 }
 
 void resetRobotAccum(){
@@ -295,6 +323,10 @@ void robotAccum(){
 void setup()
 {
    //Serial.begin(9600);
+  pinMode(LINEIN, INPUT);
+  attachInterrupt(LINEIN, LINESENSORRISING, RISING);
+  attachInterrupt(LINEIN, LINESENSORFALLING, FALLING);
+
   attachInterrupt(MCLK0, CLKFALLING0, FALLING);
   mouse_init(MCLK0, MDATA0, 0);
   attachInterrupt(MCLK1, CLKFALLING1, FALLING);
@@ -305,8 +337,8 @@ void loop()
 {
 
   /*
-  // get a reading from the mouse 
-  mouse_write(0xeb);  // give me data! 
+  // get a reading from the mouse
+  mouse_write(0xeb);  // give me data!
   mouse_read();      // ignore ack
   mstat = mouse_read();
   mx = mouse_read();
@@ -321,8 +353,11 @@ void loop()
   Serial.println();
   delay(20);  // twiddle
   */
-  
+  uint8_t odomBroadcasts=0;
+  uint8_t lastSentLineSensorUpdate=255;
+
   while(millis()<nextTargetMs){
+    uint64_t origTime=micros();
     for(uint8_t i=0; i<2; ++i){
       if(transNum[i]-lastAccumalatedTrans[i]>=3){
         updatedSinceTotalAccum[i]=true;
@@ -340,7 +375,10 @@ void loop()
     if(updatedSinceTotalAccum[0] && updatedSinceTotalAccum[1]){
       robotAccum();
     }
-    delay(2);
+    while(latestLineSensor-lastSentLineSensorUpdate!=0){
+      broadcastLineSensorUpdateOverCan();
+      ++lastSentLineSensorUpdate;
+    }
   }
   broadcastOdomOverCAN();
   resetRobotAccum();
