@@ -306,13 +306,13 @@ void broadcastOdomOverCAN(){
   CAN.write((uint8_t)dThetaFixed);
 
   CAN.write(latestN);
-  CAN.write((uint8_t)((min(transmitionTimes[0][lastAccumalatedTrans[0]-3], transmitionTimes[1][lastAccumalatedTrans[1]-3])-latestNMicros)/1000));
+  CAN.write((uint8_t)(min(min(transmitionTimes[0][lastAccumalatedTrans[0]-3], transmitionTimes[1][lastAccumalatedTrans[1]-3])-latestNMicros)/1000, 255));
 
   CAN.endPacket();
 }
 
 void canCallback(int packetLength){
-  //we should be filtering for only synchronised time
+  //we should be filtering for only synchronised time, so no need to check ids or anything (in theory)
   latestNMicros=micros();
   latestN=CAN.read();
 }
