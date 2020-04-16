@@ -18,7 +18,7 @@
 
 #define M_PI 3.14159265f
 
-#define MYID 100
+#define MYID 471
 #define SYNCHRONISEDID 0
 
 inline float sqrtSquaredSum(float a, float b){
@@ -287,8 +287,9 @@ float dTheta;
 float dX;
 float dY;
 
-uint64_t latestNMicros;
-uint8_t latestN;
+volatile uint64_t latestNMicros;
+volatile uint8_t latestN;
+volatile bool gotSynch=false;
 
 void broadcastOdomOverCAN(){
   CAN.beginPacket(MYID);
@@ -313,6 +314,7 @@ void broadcastOdomOverCAN(){
 
 void canCallback(int packetLength){
   //we should be filtering for only synchronised time, so no need to check ids or anything (in theory)
+  gotSynch=true;
   latestNMicros=micros();
   latestN=CAN.read();
 }
@@ -373,28 +375,29 @@ void loop()
   Serial.println();
   delay(20);  // twiddle
   */
-
-  while(millis()<nextTargetMs){
-    for(uint8_t i=0; i<2; ++i){
-      if(transNum[i]-lastAccumalatedTrans[i]>=3){
-        updatedSinceTotalAccum[i]=true;
-        distRaw[i]+=sqrtSquaredSum(countsTomm*extractDataX(fullTransmitionBits[i][lastAccumalatedTrans[i]], fullTransmitionBits[i][lastAccumalatedTrans[i]+1]),
-                                   countsTomm*extractDataY(fullTransmitionBits[i][lastAccumalatedTrans[i]], fullTransmitionBits[i][lastAccumalatedTrans[i]+2]));
-        float dT=(transmitionTimes[i][lastAccumalatedTrans[i]]-transmitionTimes[i][lastAccumalatedTrans[i]-3])/1000000.0f;
-        //basically copied from odrive
-        distEstimate[i]+=velEstimate[i]*dT;
-        float delta_pos = distRaw[i] - distEstimate[i];
-        distEstimate[i] += dT * pll_kp_ * delta_pos;
-        velEstimate[i] += dT * pll_ki_ * delta_pos;
-        lastAccumalatedTrans[i]+=3;
+  if(gotSynch){
+    while(millis()<nextTargetMs){
+      for(uint8_t i=0; i<2; ++i){
+        if(transNum[i]-lastAccumalatedTrans[i]>=3){
+          updatedSinceTotalAccum[i]=true;
+          distRaw[i]+=sqrtSquaredSum(countsTomm*extractDataX(fullTransmitionBits[i][lastAccumalatedTrans[i]], fullTransmitionBits[i][lastAccumalatedTrans[i]+1]),
+                                     countsTomm*extractDataY(fullTransmitionBits[i][lastAccumalatedTrans[i]], fullTransmitionBits[i][lastAccumalatedTrans[i]+2]));
+          float dT=(transmitionTimes[i][lastAccumalatedTrans[i]]-transmitionTimes[i][lastAccumalatedTrans[i]-3])/1000000.0f;
+          //basically copied from odrive
+          distEstimate[i]+=velEstimate[i]*dT;
+          float delta_pos = distRaw[i] - distEstimate[i];
+          distEstimate[i] += dT * pll_kp_ * delta_pos;
+          velEstimate[i] += dT * pll_ki_ * delta_pos;
+          lastAccumalatedTrans[i]+=3;
+        }
       }
+      if(updatedSinceTotalAccum[0] && updatedSinceTotalAccum[1]){
+        robotAccum();
+      }
+      delay(2);
     }
-    if(updatedSinceTotalAccum[0] && updatedSinceTotalAccum[1]){
-      robotAccum();
-    }
-    delay(2);
+    broadcastOdomOverCAN();
+    resetRobotAccum();
+    nextTargetMs+=50; //20hz
   }
-  broadcastOdomOverCAN();
-  resetRobotAccum();
-  nextTargetMs+=50; //20hz
 }
